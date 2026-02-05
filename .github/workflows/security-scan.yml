@@ -1,1 +1,136 @@
+name: Reusable Security Scan
 
+on:
+  workflow_call:
+    inputs:
+      acr-name:
+        description: 'Azure Container Registry name'
+        required: true
+        type: string
+      image-name:
+        description: 'Docker image name'
+        required: true
+        type: string
+      image-tag:
+        description: 'Image tag to scan'
+        required: true
+        type: string
+      runs-on:
+        description: 'Runner to use'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+      sbom-format:
+        description: 'SBOM format (spdx-json, cyclonedx-json)'
+        required: false
+        type: string
+        default: 'spdx-json'
+      sbom-retention-days:
+        description: 'SBOM artifact retention in days'
+        required: false
+        type: number
+        default: 90
+      fail-on-vulnerability:
+        description: 'Fail build on vulnerabilities'
+        required: false
+        type: boolean
+        default: false
+      severity-cutoff:
+        description: 'Severity cutoff (negligible, low, medium, high, critical)'
+        required: false
+        type: string
+        default: 'critical'
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+    outputs:
+      sbom-artifact-name:
+        description: 'SBOM artifact name'
+        value: ${{ jobs.sbom.outputs.artifact-name }}
+      vulnerabilities-found:
+        description: 'Whether vulnerabilities were found'
+        value: ${{ jobs.scan.outputs.vulnerabilities-found }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # ================================
+  # JOB 1: Generate SBOM
+  # ================================
+  sbom:
+    name: Generate SBOM
+    runs-on: ${{ inputs.runs-on }}
+    outputs:
+      artifact-name: sbom-${{ inputs.image-tag }}
+    
+    steps:
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login to ACR
+        run: az acr login --name ${{ inputs.acr-name }}
+
+      - name: Generate SBOM with Syft
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ inputs.acr-name }}.azurecr.io/${{ inputs.image-name }}:${{ inputs.image-tag }}
+          format: ${{ inputs.sbom-format }}
+          output-file: sbom.${{ inputs.sbom-format == 'spdx-json' && 'spdx' || 'cdx' }}.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ inputs.image-tag }}
+          path: sbom.*.json
+          retention-days: ${{ inputs.sbom-retention-days }}
+
+  # ================================
+  # JOB 2: Scan SBOM
+  # ================================
+  scan:
+    name: Scan SBOM
+    runs-on: ${{ inputs.runs-on }}
+    needs: sbom
+    outputs:
+      vulnerabilities-found: ${{ steps.scan.outputs.vulnerabilities }}
+    
+    steps:
+      - name: Download SBOM
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom-${{ inputs.image-tag }}
+
+      - name: Find SBOM file
+        id: find-sbom
+        run: |
+          SBOM_FILE=$(ls sbom.*.json | head -1)
+          echo "file=$SBOM_FILE" >> $GITHUB_OUTPUT
+
+      - name: Scan SBOM with Grype
+        id: scan
+        uses: anchore/scan-action@v3
+        with:
+          sbom: ${{ steps.find-sbom.outputs.file }}
+          fail-build: ${{ inputs.fail-on-vulnerability }}
+          severity-cutoff: ${{ inputs.severity-cutoff }}
+
+      - name: Output scan results
+        if: always()
+        run: |
+          echo "========================================"
+          echo "SECURITY SCAN COMPLETE"
+          echo "========================================"
+          echo "Image: ${{ inputs.acr-name }}.azurecr.io/${{ inputs.image-name }}:${{ inputs.image-tag }}"
+          echo "Severity Cutoff: ${{ inputs.severity-cutoff }}"
+          echo "Fail on Vulnerability: ${{ inputs.fail-on-vulnerability }}"
+          echo "========================================"
