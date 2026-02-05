@@ -1,1 +1,219 @@
+name: Reusable Deploy - GitOps
 
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Deployment environment name'
+        required: true
+        type: string
+      acr-name:
+        description: 'Azure Container Registry name'
+        required: true
+        type: string
+      image-name:
+        description: 'Docker image name'
+        required: true
+        type: string
+      image-tag:
+        description: 'Image tag to deploy'
+        required: true
+        type: string
+      gitops-repo:
+        description: 'GitOps repository (org/repo)'
+        required: true
+        type: string
+      gitops-path:
+        description: 'Path in GitOps repo (e.g., overlays/staging)'
+        required: true
+        type: string
+      base-image-name:
+        description: 'Base image name in kustomization (for replacement)'
+        required: true
+        type: string
+      runs-on:
+        description: 'Runner to use'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+      argocd-server:
+        description: 'ArgoCD server URL (optional)'
+        required: false
+        type: string
+        default: ''
+      argocd-app-name:
+        description: 'ArgoCD application name (optional)'
+        required: false
+        type: string
+        default: ''
+      health-check-url:
+        description: 'Health check URL for smoke test (optional)'
+        required: false
+        type: string
+        default: ''
+      sync-timeout:
+        description: 'ArgoCD sync timeout in seconds'
+        required: false
+        type: number
+        default: 300
+    secrets:
+      GITOPS_PAT:
+        required: true
+      ARGOCD_USERNAME:
+        required: false
+      ARGOCD_PASSWORD:
+        required: false
+
+jobs:
+  # ================================
+  # JOB 1: Update GitOps Repository
+  # ================================
+  update-gitops:
+    name: Update GitOps Repository
+    runs-on: ${{ inputs.runs-on }}
+    environment: ${{ inputs.environment }}
+    
+    steps:
+      - name: Checkout GitOps repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.gitops-repo }}
+          token: ${{ secrets.GITOPS_PAT }}
+          path: gitops
+
+      - name: Setup Kustomize
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          mv kustomize /usr/local/bin/
+
+      - name: Update image tag
+        run: |
+          cd gitops/${{ inputs.gitops-path }}
+          
+          NEW_IMAGE="${{ inputs.acr-name }}.azurecr.io/${{ inputs.image-name }}:${{ inputs.image-tag }}"
+          
+          kustomize edit set image ${{ inputs.base-image-name }}=${NEW_IMAGE}
+          
+          echo "========================================="
+          echo "Updated ${{ inputs.environment }} to: ${{ inputs.image-tag }}"
+          echo "========================================="
+          cat kustomization.yaml
+
+      - name: Commit and push
+        run: |
+          cd gitops
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add .
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit - image tag already up to date"
+          else
+            git commit -m "chore(${{ inputs.environment }}): update ${{ inputs.image-name }} to ${{ inputs.image-tag }}"
+            git push
+          fi
+
+  # ================================
+  # JOB 2: Sync ArgoCD (Optional)
+  # ================================
+  sync-argocd:
+    name: Sync ArgoCD
+    runs-on: ${{ inputs.runs-on }}
+    needs: update-gitops
+    if: ${{ inputs.argocd-server != '' && inputs.argocd-app-name != '' }}
+    environment: ${{ inputs.environment }}
+    
+    steps:
+      - name: Install ArgoCD CLI
+        run: |
+          curl -sSL -o argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          chmod +x argocd
+
+      - name: Login to ArgoCD
+        run: |
+          ./argocd login ${{ inputs.argocd-server }} \
+            --username ${{ secrets.ARGOCD_USERNAME }} \
+            --password ${{ secrets.ARGOCD_PASSWORD }} \
+            --grpc-web
+
+      - name: Sync Application
+        run: |
+          echo "Triggering sync for ${{ inputs.argocd-app-name }}..."
+          ./argocd app sync ${{ inputs.argocd-app-name }} --grpc-web
+          
+      - name: Wait for Sync
+        run: |
+          echo "Waiting for sync to complete..."
+          ./argocd app wait ${{ inputs.argocd-app-name }} \
+            --timeout ${{ inputs.sync-timeout }} \
+            --health \
+            --grpc-web
+          echo "✅ Sync completed successfully!"
+
+  # ================================
+  # JOB 3: Smoke Test (Optional)
+  # ================================
+  smoke-test:
+    name: Smoke Test
+    runs-on: ${{ inputs.runs-on }}
+    needs: [update-gitops, sync-argocd]
+    if: always() && inputs.health-check-url != '' && (needs.sync-argocd.result == 'success' || needs.sync-argocd.result == 'skipped')
+    environment: ${{ inputs.environment }}
+    
+    steps:
+      - name: Run Smoke Test
+        run: |
+          echo "Running smoke test..."
+          sleep 10
+          
+          MAX_RETRIES=5
+          RETRY_COUNT=0
+          
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${{ inputs.health-check-url }}" || echo "000")
+            
+            if [ "$HTTP_STATUS" == "200" ]; then
+              echo "========================================="
+              echo "✅ SMOKE TEST PASSED!"
+              echo "========================================="
+              echo "URL: ${{ inputs.health-check-url }}"
+              echo "Status: $HTTP_STATUS"
+              echo "========================================="
+              exit 0
+            fi
+            
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            echo "Attempt $RETRY_COUNT/$MAX_RETRIES - Status: $HTTP_STATUS - Retrying in 10s..."
+            sleep 10
+          done
+          
+          echo "========================================="
+          echo "❌ SMOKE TEST FAILED!"
+          echo "========================================="
+          echo "URL: ${{ inputs.health-check-url }}"
+          echo "Expected: 200"
+          echo "Got: $HTTP_STATUS"
+          echo "========================================="
+          exit 1
+
+  # ================================
+  # JOB 4: Deployment Summary
+  # ================================
+  summary:
+    name: Deployment Summary
+    runs-on: ${{ inputs.runs-on }}
+    needs: [update-gitops, sync-argocd, smoke-test]
+    if: always()
+    
+    steps:
+      - name: Deployment Summary
+        run: |
+          echo "========================================="
+          echo "DEPLOYMENT SUMMARY"
+          echo "========================================="
+          echo "Environment: ${{ inputs.environment }}"
+          echo "Image: ${{ inputs.acr-name }}.azurecr.io/${{ inputs.image-name }}:${{ inputs.image-tag }}"
+          echo "GitOps Update: ${{ needs.update-gitops.result }}"
+          echo "ArgoCD Sync: ${{ needs.sync-argocd.result }}"
+          echo "Smoke Test: ${{ needs.smoke-test.result }}"
+          echo "========================================="
