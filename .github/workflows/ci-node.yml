@@ -1,1 +1,212 @@
+name: Reusable CI - Node.js
 
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: 'Node.js version'
+        required: false
+        type: string
+        default: '20'
+      working-directory:
+        description: 'Working directory for npm commands'
+        required: false
+        type: string
+        default: '.'
+      runs-on:
+        description: 'Runner to use'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+      run-lint:
+        description: 'Run linting'
+        required: false
+        type: boolean
+        default: true
+      run-tests:
+        description: 'Run tests'
+        required: false
+        type: boolean
+        default: true
+      run-security:
+        description: 'Run security scan'
+        required: false
+        type: boolean
+        default: true
+      run-sonarcloud:
+        description: 'Run SonarCloud analysis'
+        required: false
+        type: boolean
+        default: false
+      security-audit-level:
+        description: 'npm audit level (low, moderate, high, critical)'
+        required: false
+        type: string
+        default: 'high'
+    secrets:
+      SONAR_TOKEN:
+        required: false
+    outputs:
+      lint-result:
+        description: 'Lint job result'
+        value: ${{ jobs.lint.result }}
+      test-result:
+        description: 'Test job result'
+        value: ${{ jobs.test.result }}
+      security-result:
+        description: 'Security job result'
+        value: ${{ jobs.security.result }}
+
+jobs:
+  # ================================
+  # JOB 1: Lint
+  # ================================
+  lint:
+    name: Lint
+    runs-on: ${{ inputs.runs-on }}
+    if: ${{ inputs.run-lint }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: 'npm'
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci
+
+      - name: Run ESLint
+        working-directory: ${{ inputs.working-directory }}
+        run: npm run lint
+
+  # ================================
+  # JOB 2: Test
+  # ================================
+  test:
+    name: Test
+    runs-on: ${{ inputs.runs-on }}
+    if: ${{ inputs.run-tests }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: 'npm'
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci
+
+      - name: Run tests
+        working-directory: ${{ inputs.working-directory }}
+        run: npm test
+
+      - name: Run tests with coverage
+        working-directory: ${{ inputs.working-directory }}
+        run: npm run test:coverage
+        continue-on-error: true
+
+  # ================================
+  # JOB 3: Security Scan
+  # ================================
+  security:
+    name: Security Scan
+    runs-on: ${{ inputs.runs-on }}
+    if: ${{ inputs.run-security }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: 'npm'
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci
+
+      - name: Run npm audit
+        working-directory: ${{ inputs.working-directory }}
+        run: npm audit --audit-level=${{ inputs.security-audit-level }}
+        continue-on-error: true
+
+  # ================================
+  # JOB 4: SonarCloud Analysis
+  # ================================
+  sonarcloud:
+    name: SonarCloud Analysis
+    runs-on: ${{ inputs.runs-on }}
+    needs: test
+    if: ${{ inputs.run-sonarcloud }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: 'npm'
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: npm ci
+
+      - name: Run tests with coverage
+        working-directory: ${{ inputs.working-directory }}
+        run: npm run test:coverage
+        continue-on-error: true
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@v2.3.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # ================================
+  # JOB 5: CI Status
+  # ================================
+  ci-status:
+    name: CI Status
+    runs-on: ${{ inputs.runs-on }}
+    needs: [lint, test, security, sonarcloud]
+    if: always()
+    
+    steps:
+      - name: Check CI Status
+        run: |
+          echo "========================================"
+          echo "CI PIPELINE SUMMARY"
+          echo "========================================"
+          echo "Lint: ${{ needs.lint.result }}"
+          echo "Test: ${{ needs.test.result }}"
+          echo "Security: ${{ needs.security.result }}"
+          echo "SonarCloud: ${{ needs.sonarcloud.result }}"
+          echo "========================================"
+          
+          # Fail if lint or test failed (not skipped)
+          if [ "${{ needs.lint.result }}" == "failure" ] || \
+             [ "${{ needs.test.result }}" == "failure" ]; then
+            echo "❌ CI FAILED!"
+            exit 1
+          fi
+          echo "✅ CI PASSED!"
