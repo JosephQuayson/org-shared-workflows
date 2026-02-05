@@ -64,9 +64,9 @@ on:
         description: 'Full image reference'
         value: ${{ jobs.build.outputs.full-image }}
 
-permissions:
-  id-token: write
-  contents: read
+# permissions:
+#   id-token: write
+#   contents: read
 
 jobs:
   # ================================
