@@ -84,7 +84,8 @@ jobs:
       - name: Setup Kustomize
         run: |
           curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
-          mv kustomize /usr/local/bin/
+          chmod +x kustomize
+          ./kustomize version
 
       - name: Update image tag
         run: |
