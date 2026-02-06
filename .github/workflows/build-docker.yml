@@ -26,6 +26,11 @@ on:
         required: false
         type: string
         default: 'ubuntu-latest'
+      environment:
+        description: 'GitHub Environment (for OIDC)'
+        required: false
+        type: string
+        default: ''
       push:
         description: 'Push image to registry'
         required: false
@@ -69,9 +74,6 @@ permissions:
   contents: read
 
 jobs:
-  # ================================
-  # JOB 1: Test (Optional)
-  # ================================
   test:
     name: Test
     runs-on: ${{ inputs.runs-on }}
@@ -93,14 +95,12 @@ jobs:
       - name: Run tests
         run: npm test
 
-  # ================================
-  # JOB 2: Build Docker Image
-  # ================================
   build:
     name: Build Docker Image
     runs-on: ${{ inputs.runs-on }}
     needs: test
     if: always() && (needs.test.result == 'success' || needs.test.result == 'skipped')
+    environment: ${{ inputs.environment }}
     
     outputs:
       image-tag: ${{ steps.sha.outputs.short_sha }}
@@ -152,8 +152,164 @@ jobs:
         run: |
           echo "========================================"
           echo "BUILD COMPLETE"
-          echo "========================================"
-          echo "Image Tag: ${{ steps.sha.outputs.short_sha }}"
-          echo "Full Image: ${{ inputs.acr-name }}.azurecr.io/${{ inputs.image-name }}:${{ steps.sha.outputs.short_sha }}"
-          echo "Digest: ${{ steps.build.outputs.digest }}"
-          echo "========================================"
+          echo "======
+
+# name: Reusable Build - Docker
+
+# on:
+#   workflow_call:
+#     inputs:
+#       acr-name:
+#         description: 'Azure Container Registry name'
+#         required: true
+#         type: string
+#       image-name:
+#         description: 'Docker image name'
+#         required: true
+#         type: string
+#       dockerfile:
+#         description: 'Dockerfile path'
+#         required: false
+#         type: string
+#         default: './Dockerfile'
+#       context:
+#         description: 'Docker build context'
+#         required: false
+#         type: string
+#         default: '.'
+#       runs-on:
+#         description: 'Runner to use'
+#         required: false
+#         type: string
+#         default: 'ubuntu-latest'
+#       push:
+#         description: 'Push image to registry'
+#         required: false
+#         type: boolean
+#         default: true
+#       tag-latest:
+#         description: 'Also tag as latest'
+#         required: false
+#         type: boolean
+#         default: true
+#       run-tests:
+#         description: 'Run tests before build'
+#         required: false
+#         type: boolean
+#         default: true
+#       node-version:
+#         description: 'Node.js version for tests'
+#         required: false
+#         type: string
+#         default: '20'
+#     secrets:
+#       AZURE_CLIENT_ID:
+#         required: true
+#       AZURE_TENANT_ID:
+#         required: true
+#       AZURE_SUBSCRIPTION_ID:
+#         required: true
+#     outputs:
+#       image-tag:
+#         description: 'Image tag (short SHA)'
+#         value: ${{ jobs.build.outputs.image-tag }}
+#       image-digest:
+#         description: 'Image digest'
+#         value: ${{ jobs.build.outputs.image-digest }}
+#       full-image:
+#         description: 'Full image reference'
+#         value: ${{ jobs.build.outputs.full-image }}
+
+# permissions:
+#   id-token: write
+#   contents: read
+
+# jobs:
+#   # ================================
+#   # JOB 1: Test (Optional)
+#   # ================================
+#   test:
+#     name: Test
+#     runs-on: ${{ inputs.runs-on }}
+#     if: ${{ inputs.run-tests }}
+    
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
+
+#       - name: Setup Node.js
+#         uses: actions/setup-node@v4
+#         with:
+#           node-version: ${{ inputs.node-version }}
+#           cache: 'npm'
+
+#       - name: Install dependencies
+#         run: npm ci
+
+#       - name: Run tests
+#         run: npm test
+
+#   # ================================
+#   # JOB 2: Build Docker Image
+#   # ================================
+#   build:
+#     name: Build Docker Image
+#     runs-on: ${{ inputs.runs-on }}
+#     needs: test
+#     if: always() && (needs.test.result == 'success' || needs.test.result == 'skipped')
+    
+#     outputs:
+#       image-tag: ${{ steps.sha.outputs.short_sha }}
+#       image-digest: ${{ steps.build.outputs.digest }}
+#       full-image: ${{ inputs.acr-name }}.azurecr.io/${{ inputs.image-name }}:${{ steps.sha.outputs.short_sha }}
+    
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
+
+#       - name: Get short SHA
+#         id: sha
+#         run: echo "short_sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+#       - name: Set up Docker Buildx
+#         uses: docker/setup-buildx-action@v3
+
+#       - name: Login to Azure
+#         uses: azure/login@v2
+#         with:
+#           client-id: ${{ secrets.AZURE_CLIENT_ID }}
+#           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+#           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+#       - name: Login to ACR
+#         run: az acr login --name ${{ inputs.acr-name }}
+
+#       - name: Generate image tags
+#         id: tags
+#         run: |
+#           TAGS="${{ inputs.acr-name }}.azurecr.io/${{ inputs.image-name }}:${{ steps.sha.outputs.short_sha }}"
+#           if [ "${{ inputs.tag-latest }}" == "true" ]; then
+#             TAGS="${TAGS},${{ inputs.acr-name }}.azurecr.io/${{ inputs.image-name }}:latest"
+#           fi
+#           echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+#       - name: Build and push
+#         id: build
+#         uses: docker/build-push-action@v5
+#         with:
+#           context: ${{ inputs.context }}
+#           file: ${{ inputs.dockerfile }}
+#           push: ${{ inputs.push }}
+#           tags: ${{ steps.tags.outputs.tags }}
+#           cache-from: type=gha
+#           cache-to: type=gha,mode=max
+
+#       - name: Output image info
+#         run: |
+#           echo "========================================"
+#           echo "BUILD COMPLETE"
+#           echo "========================================"
+#           echo "Image Tag: ${{ steps.sha.outputs.short_sha }}"
+#           echo "Full Image: ${{ inputs.acr-name }}.azurecr.io/${{ inputs.image-name }}:${{ steps.sha.outputs.short_sha }}"
+#           echo "Digest: ${{ steps.build.outputs.digest }}"
+#           echo "========================================"
