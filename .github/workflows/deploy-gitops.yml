@@ -81,11 +81,8 @@ jobs:
           token: ${{ secrets.GITOPS_PAT }}
           path: gitops
 
-      - name: Setup Kustomize
-        run: |
-          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
-          chmod +x kustomize
-          ./kustomize version
+      - name: Verify Kustomize installed
+        run: kustomize version
 
       - name: Update image tag
         run: |
@@ -125,14 +122,12 @@ jobs:
     environment: ${{ inputs.environment }}
     
     steps:
-      - name: Install ArgoCD CLI
-        run: |
-          curl -sSL -o argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
-          chmod +x argocd
+      - name: Verify ArgoCD CLI installed
+        run: argocd version --client
 
       - name: Login to ArgoCD
         run: |
-          ./argocd login ${{ inputs.argocd-server }} \
+          argocd login ${{ inputs.argocd-server }} \
             --username ${{ secrets.ARGOCD_USERNAME }} \
             --password ${{ secrets.ARGOCD_PASSWORD }} \
             --grpc-web
@@ -140,12 +135,12 @@ jobs:
       - name: Sync Application
         run: |
           echo "Triggering sync for ${{ inputs.argocd-app-name }}..."
-          ./argocd app sync ${{ inputs.argocd-app-name }} --grpc-web
+          argocd app sync ${{ inputs.argocd-app-name }} --grpc-web
           
       - name: Wait for Sync
         run: |
           echo "Waiting for sync to complete..."
-          ./argocd app wait ${{ inputs.argocd-app-name }} \
+          argocd app wait ${{ inputs.argocd-app-name }} \
             --timeout ${{ inputs.sync-timeout }} \
             --health \
             --grpc-web
