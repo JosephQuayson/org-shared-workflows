@@ -27,7 +27,7 @@ on:
         type: string
         default: 'ubuntu-latest'
       environment:
-        description: 'GitHub Environment (for OIDC)'
+        description: 'GitHub Environment (for OIDC) - REQUIRED for tag-based deployments'
         required: false
         type: string
         default: ''
@@ -78,7 +78,6 @@ jobs:
     name: Test
     runs-on: ${{ inputs.runs-on }}
     if: ${{ inputs.run-tests }}
-    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -108,6 +107,11 @@ jobs:
       full-image: ${{ inputs.acr-name }}.azurecr.io/${{ inputs.image-name }}:${{ steps.sha.outputs.short_sha }}
     
     steps:
+      - name: Debug - Show environment
+        run: |
+          echo "Environment input: '${{ inputs.environment }}'"
+          echo "This job should use environment: ${{ inputs.environment }}"
+
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -152,7 +156,14 @@ jobs:
         run: |
           echo "========================================"
           echo "BUILD COMPLETE"
-          echo "======
+          echo "========================================"
+          echo "Image Tag: ${{ steps.sha.outputs.short_sha }}"
+          echo "Full Image: ${{ inputs.acr-name }}.azurecr.io/${{ inputs.image-name }}:${{ steps.sha.outputs.short_sha }}"
+          echo "Digest: ${{ steps.build.outputs.digest }}"
+          echo "========================================"
+
+
+
 
 # name: Reusable Build - Docker
 
